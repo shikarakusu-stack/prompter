@@ -61,6 +61,27 @@
     border-radius: 10px; padding: 10px 14px; font-size: 14px;
   }
 
+  #info {
+    border: 1px solid #4ad27a; color: var(--text); background: #12251a;
+    border-radius: 10px; padding: 10px 14px; font-size: 14px;
+  }
+  #edit .row { display: flex; gap: 8px; }
+  #edit .row button { flex: 1; font-size: 15px; }
+
+  /* ---- QRコードで送る・受け取る画面 ---- */
+  #qr {
+    position: fixed; inset: 0; z-index: 10; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 16px; text-align: center;
+  }
+  #qr p { margin: 0; font-size: 15px; }
+  #qrProg { color: var(--accent); font-weight: 700; min-height: 1.7em; }
+  #qrCanvas {
+    width: min(84vmin, 560px); height: min(84vmin, 560px);
+    background: #fff; border-radius: 8px; image-rendering: pixelated;
+  }
+  #qrVideo { width: min(84vmin, 560px); max-height: 56vh; border-radius: 8px; background: #000; object-fit: cover; }
+
   /* ---- 読む画面 ---- */
   #stage { height: 100%; display: flex; flex-direction: column; }
   #scroller { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
@@ -106,9 +127,23 @@
   <h1>声で進むプロンプター</h1>
   <p>原稿を貼って「スタート」を押し、読み始めてください。声に合わせて進みます。</p>
   <div id="notice" hidden></div>
+  <div id="info" hidden></div>
   <textarea id="text" aria-label="原稿" placeholder="ここに原稿を貼り付けます"></textarea>
+  <div class="row">
+    <button id="send" type="button">スマホに送る（QR表示）</button>
+    <button id="recv" type="button">QRで受け取る</button>
+  </div>
   <button id="start" type="button">スタート</button>
 </main>
+
+<!-- QRコードで送る・受け取る画面 -->
+<div id="qr" hidden>
+  <p id="qrMsg"></p>
+  <canvas id="qrCanvas" hidden></canvas>
+  <video id="qrVideo" playsinline muted hidden></video>
+  <p id="qrProg"></p>
+  <button id="qrClose" type="button">閉じる</button>
+</div>
 
 <!-- 読む画面 -->
 <div id="stage" hidden>
@@ -414,8 +449,176 @@
     if (!running && SR) { running = true; setMic("", "準備中"); startListening(); keepAwake(); }
   });
 
+  // ---- QRコードで原稿を送る・受け取る ----
+  // 原稿を圧縮して小分けにし、QRコードを順番に切り替えて表示する。受け取る側はカメラで全部集めて元に戻す。
+  // 原稿はQRコードの中にだけ入り、ネットには送られない。
+  var QR_LIB = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
+  var SCAN_LIB = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js";
+  var CHUNK = 480, FRAME_MS = 350;
+  var qrEl = $("qr"), qrMsg = $("qrMsg"), qrProg = $("qrProg"), qrCanvas = $("qrCanvas"), qrVideo = $("qrVideo");
+  var qrTimer = 0, qrRaf = 0, qrStream = null, qrOpen = false;
+
+  function loadScript(src, name) {
+    if (window[name]) return Promise.resolve();
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = src; s.onload = resolve; s.onerror = function () { reject(new Error("load")); };
+      document.head.appendChild(s);
+    });
+  }
+  function toB64(u8) {
+    var s = "";
+    for (var i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  function fromB64(b) {
+    var s = atob(b), u = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+    return u;
+  }
+  function pipe(u8, Stream) {
+    return new Response(new Blob([u8]).stream().pipeThrough(new Stream("deflate"))).arrayBuffer()
+      .then(function (b) { return new Uint8Array(b); });
+  }
+  function pack(str) {                   // 先頭の1文字:z=圧縮あり / r=圧縮なし
+    var u = new TextEncoder().encode(str);
+    if (!window.CompressionStream) return Promise.resolve("r" + toB64(u));
+    return pipe(u, window.CompressionStream).then(function (z) { return "z" + toB64(z); })
+      .catch(function () { return "r" + toB64(u); });
+  }
+  function unpack(p) {
+    var u = fromB64(p.slice(1));
+    if (p[0] === "r") return Promise.resolve(new TextDecoder().decode(u));
+    if (!window.DecompressionStream) return Promise.reject(new Error("unsupported"));
+    return pipe(u, window.DecompressionStream).then(function (d) { return new TextDecoder().decode(d); });
+  }
+  function makeFrames(payload) {
+    var id = Math.random().toString(36).slice(2, 6).padEnd(4, "0");
+    var n = Math.max(1, Math.ceil(payload.length / CHUNK)), frames = [];
+    for (var i = 0; i < n; i++) frames.push("PR1:" + id + ":" + i + ":" + n + ":" + payload.slice(i * CHUNK, (i + 1) * CHUNK));
+    return frames;
+  }
+  function newReceiver() {               // 読み取ったQRを集める。全部そろったら中身を返す
+    var id = "", n = 0, parts = [], got = 0;
+    return {
+      get got() { return got; }, get total() { return n; },
+      add: function (text) {
+        var m = /^PR1:([a-z0-9]{4}):(\d+):(\d+):([\s\S]*)$/.exec(text);
+        if (!m) return null;
+        if (m[1] !== id || +m[3] !== n) { id = m[1]; n = +m[3]; parts = []; got = 0; }
+        var i = +m[2];
+        if (i >= n) return null;
+        if (parts[i] === undefined) { parts[i] = m[4]; got++; }
+        return got === n ? parts.join("") : null;
+      }
+    };
+  }
+
+  function drawQR(text) {
+    var q = window.qrcode(0, "L");
+    q.addData(text); q.make();
+    var n = q.getModuleCount(), cell = 6, pad = 4;
+    qrCanvas.width = qrCanvas.height = (n + pad * 2) * cell;
+    var g = qrCanvas.getContext("2d");
+    g.fillStyle = "#fff"; g.fillRect(0, 0, qrCanvas.width, qrCanvas.height);
+    g.fillStyle = "#000";
+    for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) {
+      if (q.isDark(r, c)) g.fillRect((c + pad) * cell, (r + pad) * cell, cell, cell);
+    }
+  }
+
+  function openQR(msg) {
+    qrOpen = true;
+    qrMsg.textContent = msg; qrProg.textContent = "";
+    qrCanvas.hidden = true; qrVideo.hidden = true;
+    qrEl.hidden = false;
+  }
+  function closeQR() {
+    qrOpen = false;
+    clearInterval(qrTimer); cancelAnimationFrame(qrRaf);
+    if (qrStream) { qrStream.getTracks().forEach(function (t) { t.stop(); }); qrStream = null; }
+    qrVideo.srcObject = null;
+    qrEl.hidden = true;
+  }
+  function showInfo(msg) {
+    var el = $("info");
+    el.textContent = msg; el.hidden = false;
+    setTimeout(function () { el.hidden = true; }, 6000);
+  }
+
+  // 送る側(パソコン):原稿をQRコードにして表示する
+  $("send").addEventListener("click", function () {
+    var str = textEl.value.replace(/\r\n?/g, "\n").trim();
+    if (!str) { textEl.focus(); return; }
+    openQR("QRコードを作っています…");
+    Promise.all([loadScript(QR_LIB, "qrcode"), pack(str)]).then(function (res) {
+      if (!qrOpen) return;
+      var frames = makeFrames(res[1]), i = 0;
+      qrMsg.textContent = "スマホのプロンプターで「QRで受け取る」を押して、このQRコードを映してください。";
+      qrCanvas.hidden = false;
+      drawQR(frames[0]);
+      if (frames.length > 1) {
+        qrProg.textContent = "QRコードが自動で切り替わります(全" + frames.length + "枚)。そのまま映し続けてください。";
+        qrTimer = setInterval(function () { i = (i + 1) % frames.length; drawQR(frames[i]); }, FRAME_MS);
+      }
+    }).catch(function () {
+      if (qrOpen) qrMsg.textContent = "QRコードを作れませんでした。ネットにつながっているか確認して、もう一度お試しください。";
+    });
+  });
+
+  // 受け取る側(スマホ):カメラでQRコードを読み取り、原稿欄に入れる
+  $("recv").addEventListener("click", function () {
+    openQR("カメラを準備しています…");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      qrMsg.textContent = "このブラウザではカメラが使えません。";
+      return;
+    }
+    var rx = newReceiver(), work = document.createElement("canvas"), done = false;
+    Promise.all([
+      loadScript(SCAN_LIB, "jsQR"),
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+    ]).then(function (res) {
+      if (!qrOpen) { res[1].getTracks().forEach(function (t) { t.stop(); }); return; }
+      qrStream = res[1];
+      qrVideo.srcObject = qrStream; qrVideo.hidden = false;
+      qrVideo.play().catch(function () {});
+      qrMsg.textContent = "パソコンに出ているQRコードを映してください。";
+      (function tick() {
+        if (!qrOpen || done) return;
+        qrRaf = requestAnimationFrame(tick);
+        var vw = qrVideo.videoWidth, vh = qrVideo.videoHeight;
+        if (!vw || !vh) return;
+        var k = Math.min(1, 720 / Math.max(vw, vh));
+        work.width = Math.round(vw * k); work.height = Math.round(vh * k);
+        var g = work.getContext("2d", { willReadFrequently: true });
+        g.drawImage(qrVideo, 0, 0, work.width, work.height);
+        var img = g.getImageData(0, 0, work.width, work.height);
+        var hit = window.jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+        if (!hit || !hit.data) return;
+        var payload = rx.add(hit.data);
+        if (rx.total) qrProg.textContent = rx.got + " / " + rx.total + " 枚 受け取りました";
+        if (payload === null) return;
+        done = true;
+        unpack(payload).then(function (str) {
+          textEl.value = str; save("text", str);
+          closeQR();
+          showInfo("原稿を受け取りました(" + str.length + "文字)。");
+        }).catch(function () {
+          qrMsg.textContent = "原稿を元に戻せませんでした。もう一度お試しください。";
+        });
+      })();
+    }).catch(function (e) {
+      if (!qrOpen) return;
+      qrMsg.textContent = e && e.message === "load"
+        ? "読み取りの準備ができませんでした。ネットにつながっているか確認してください。"
+        : "カメラが使えません。カメラの許可を確認してください。";
+    });
+  });
+  $("qrClose").addEventListener("click", closeQR);
+
   // テスト用に照合ロジックを公開
-  window.__prompter = { setScript: setScript, locate: locate, get pos() { return pos; }, set pos(v) { pos = v; }, get N() { return N; }, get SEGS() { return SEGS; } };
+  window.__prompter = { setScript: setScript, locate: locate, get pos() { return pos; }, set pos(v) { pos = v; }, get N() { return N; }, get SEGS() { return SEGS; },
+    qr: { pack: pack, unpack: unpack, makeFrames: makeFrames, newReceiver: newReceiver, drawQR: drawQR, loadScript: loadScript, QR_LIB: QR_LIB, SCAN_LIB: SCAN_LIB } };
 })();
 </script>
 </body>
