@@ -93,13 +93,8 @@
   }
   #script.mirror { transform: scaleX(-1); }
   #past { color: var(--past); }
-  /* 読んでいる文を色反転 */
-  #curRead, #curNext {
-    background: var(--text);
-    -webkit-box-decoration-break: clone; box-decoration-break: clone;
-  }
-  #curRead { color: #8f8c84; }
-  #curNext { color: var(--bg); }
+  /* 色は3つだけ:読み終わり=暗いグレー / 今読む文=黄色 / これから=白 */
+  #curRead, #curNext { color: #ffc83d; }
 
   #bar {
     display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
