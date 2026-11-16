@@ -157,6 +157,7 @@
       <button id="smaller" type="button" aria-label="文字を小さく">文字 −</button>
       <button id="bigger" type="button" aria-label="文字を大きく">文字 ＋</button>
     </div>
+    <button id="align" type="button">揃え：左</button>
     <button id="mirror" type="button" aria-pressed="false">左右反転</button>
   </div>
 </div>
@@ -284,8 +285,18 @@
     return segIndexAt(MAP[pos]);
   }
 
-  function render(instant) {
+  // 音声認識は声より少し遅れて届く。その分を見越して、文の終わりの数文字まで来たら次の文へ色を移す。
+  var LEAD = 5;
+  function displaySeg() {
     var si = currentSeg();
+    if (si < 0 || si + 1 >= SEGS.length) return si;
+    var a = segStartPos(si), b = segStartPos(si + 1);
+    var lead = Math.min(LEAD, Math.floor((b - a) / 3));   // 短い文は早送りしすぎない
+    return pos > a && b - pos <= lead ? si + 1 : si;
+  }
+
+  function render(instant) {
+    var si = displaySeg();
     if (si < 0) {
       elPast.textContent = text; elRead.textContent = ""; elNext.textContent = ""; elFuture.textContent = "";
       return;
@@ -330,7 +341,12 @@
   // ---- 文字サイズ・左右反転 ----
   var fontSize = parseInt(load("font", "48"), 10) || 48;
   var mirrored = load("mirror", "0") === "1";
+  var ALIGNS = ["left", "center", "right"], ALIGN_LABEL = { left: "左", center: "中央", right: "右" };
+  var align = load("align", "left");
+  if (ALIGNS.indexOf(align) < 0) align = "left";
   function applyLook() {
+    scriptEl.style.textAlign = align;
+    $("align").textContent = "揃え：" + ALIGN_LABEL[align];
     scriptEl.style.fontSize = fontSize + "px";
     scriptEl.classList.toggle("mirror", mirrored);
     $("mirror").setAttribute("aria-pressed", mirrored ? "true" : "false");
@@ -436,6 +452,10 @@
   $("next").addEventListener("click", function () { stepSegment(1); });
   $("smaller").addEventListener("click", function () { changeFont(-6); });
   $("bigger").addEventListener("click", function () { changeFont(6); });
+  $("align").addEventListener("click", function () {
+    align = ALIGNS[(ALIGNS.indexOf(align) + 1) % ALIGNS.length];
+    save("align", align); applyLook(); render(true);
+  });
   $("mirror").addEventListener("click", function () {
     mirrored = !mirrored; save("mirror", mirrored ? "1" : "0"); applyLook();
   });
@@ -612,7 +632,7 @@
   $("qrClose").addEventListener("click", closeQR);
 
   // テスト用に照合ロジックを公開
-  window.__prompter = { setScript: setScript, locate: locate, get pos() { return pos; }, set pos(v) { pos = v; }, get N() { return N; }, get SEGS() { return SEGS; },
+  window.__prompter = { setScript: setScript, locate: locate, get pos() { return pos; }, set pos(v) { pos = v; }, get N() { return N; }, get SEGS() { return SEGS; }, displaySeg: displaySeg, currentSeg: currentSeg,
     qr: { pack: pack, unpack: unpack, makeFrames: makeFrames, newReceiver: newReceiver, drawQR: drawQR, loadScript: loadScript, QR_LIB: QR_LIB, SCAN_LIB: SCAN_LIB } };
 })();
 </script>
