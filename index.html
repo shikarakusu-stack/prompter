@@ -97,17 +97,23 @@
   #curRead, #curNext { color: #ffc83d; }
 
   #bar {
-    display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
+    /* ボタンは必ず1行。画面が狭いときは、ボタンの幅を均等に縮めて収める */
+    display: flex; flex-wrap: nowrap; align-items: center; justify-content: center; gap: 4px;
     background: var(--panel); border-top: 1px solid var(--line);
-    padding: 8px max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    padding: 6px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   }
-  #bar button { padding: 8px 12px; font-size: 15px; }
-  #bar .group { display: flex; gap: 4px; }
+  #bar button {
+    flex: 1 1 0; min-width: 0; max-width: 88px; padding: 8px 0; font-size: 15px;
+    display: flex; align-items: center; justify-content: center; white-space: nowrap;
+  }
+  #bar svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   #mirror[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
   #mic {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 13px; color: var(--muted); min-width: 9em;
+    flex: none; display: flex; align-items: center; justify-content: center; gap: 6px;
+    font-size: 12px; color: var(--muted); min-width: 28px; min-height: 44px; white-space: nowrap;
   }
+  #micText { display: none; }
+  #mic.err #micText { display: inline; }
   #mic i { width: 10px; height: 10px; border-radius: 50%; background: var(--past); flex: none; }
   #mic.on i { background: #4ad27a; }
   #mic.err { color: var(--danger); }
@@ -148,18 +154,14 @@
   </div>
   <div id="bar">
     <div id="mic" role="status"><i></i><span id="micText">準備中</span></div>
-    <button id="back" type="button">原稿に戻る</button>
-    <button id="top" type="button">最初から</button>
-    <div class="group">
-      <button id="prev" type="button" aria-label="前の文へ">◀ 文</button>
-      <button id="next" type="button" aria-label="次の文へ">文 ▶</button>
-    </div>
-    <div class="group">
-      <button id="smaller" type="button" aria-label="文字を小さく">文字 −</button>
-      <button id="bigger" type="button" aria-label="文字を大きく">文字 ＋</button>
-    </div>
-    <button id="align" type="button">揃え：左</button>
-    <button id="mirror" type="button" aria-pressed="false">左右反転</button>
+    <button id="back" type="button" aria-label="原稿に戻る">原稿</button>
+    <button id="top" type="button" aria-label="最初から"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button id="prev" type="button" aria-label="前の文へ">◀</button>
+    <button id="next" type="button" aria-label="次の文へ">▶</button>
+    <button id="smaller" type="button" aria-label="文字を小さく">小</button>
+    <button id="bigger" type="button" aria-label="文字を大きく">大</button>
+    <button id="align" type="button" aria-label="揃え"><svg viewBox="0 0 24 24" aria-hidden="true"></svg></button>
+    <button id="mirror" type="button" aria-pressed="false" aria-label="左右反転">反転</button>
   </div>
 </div>
 
@@ -170,7 +172,7 @@
 
   // ---- 版の確認 ----
   // スマホは古いページをしばらく覚えている。開いたときに最新の版を確かめ、違っていたら自動で読み込み直す。
-  var VERSION = "2026-11-16-5";          // 公開のたびに書き換える
+  var VERSION = "2026-11-16-6";          // 公開のたびに書き換える
   $("ver").textContent = "版 " + VERSION;
   (function checkUpdate() {
     if (!window.fetch || location.protocol.indexOf("http") !== 0) return;
@@ -366,7 +368,14 @@
   if (ALIGNS.indexOf(align) < 0) align = "left";
   function applyLook() {
     scriptEl.style.textAlign = align;
-    $("align").textContent = "揃え：" + ALIGN_LABEL[align];
+    // 揃えボタンの絵(3本線)を、今の揃えに合わせて描く
+    var lines = "";
+    [[16, 6], [10, 12], [14, 18]].forEach(function (l) {
+      var x = align === "left" ? 4 : align === "center" ? 12 - l[0] / 2 : 20 - l[0];
+      lines += '<path d="M' + x + " " + l[1] + "h" + l[0] + '"/>';
+    });
+    $("align").firstElementChild.innerHTML = lines;
+    $("align").setAttribute("aria-label", "揃え：" + ALIGN_LABEL[align]);
     scriptEl.style.fontSize = fontSize + "px";
     scriptEl.classList.toggle("mirror", mirrored);
     $("mirror").setAttribute("aria-pressed", mirrored ? "true" : "false");
@@ -405,10 +414,10 @@
     rec.onerror = function (ev) {
       if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
         running = false;
-        setMic("err", "マイクが許可されていません");
+        setMic("err", "許可なし");       // マイクが許可されていない
       } else if (ev.error === "audio-capture") {
         running = false;
-        setMic("err", "マイクが見つかりません");
+        setMic("err", "マイクなし");     // マイクが見つからない
       }
       // no-speech / aborted / network は onend で自動的に再開する
     };
@@ -458,7 +467,7 @@
     scroller.scrollTop = 0;
     render(true);
     if (SR) { running = true; setMic("", "準備中"); startListening(); keepAwake(); }
-    else setMic("err", "音声認識が使えません(手動で進めます)");
+    else setMic("err", "認識不可");       // 音声認識が使えないブラウザ(手動で進める)
   });
 
   $("back").addEventListener("click", function () {
