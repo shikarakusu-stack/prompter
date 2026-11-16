@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>声で進むプロンプター</title>
+<style>
+  /* 画面は2つだけ。原稿を貼る画面と、読む画面。読む画面は黒地に白文字で固定。 */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0c0e;
+    --panel: #17191d;
+    --line: #2c3037;
+    --text: #f4f2ec;
+    --muted: #9a9ca3;
+    --past: #565a62;
+    --accent: #ffb224;
+    --danger: #ff6b5e;
+    --font: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--font); line-height: 1.7;
+    -webkit-text-size-adjust: 100%;
+  }
+  button {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 14px; min-height: 44px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  button:active { background: #23262c; }
+  button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+
+  /* ---- 原稿を貼る画面 ---- */
+  #edit {
+    height: 100%; display: flex; flex-direction: column; gap: 14px;
+    max-width: 760px; margin: 0 auto;
+    padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  #edit h1 { font-size: 22px; margin: 0; letter-spacing: .02em; }
+  #edit p { margin: 0; color: var(--muted); font-size: 14px; }
+  #text {
+    flex: 1; min-height: 160px; width: 100%; resize: none;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; font: inherit; font-size: 17px; line-height: 1.8;
+  }
+  #start {
+    background: var(--accent); color: #1a1200; border-color: var(--accent);
+    font-weight: 700; font-size: 18px; min-height: 56px;
+  }
+  #start:active { background: #e89f17; }
+  #notice {
+    border: 1px solid var(--danger); color: var(--text); background: #2a1512;
+    border-radius: 10px; padding: 10px 14px; font-size: 14px;
+  }
+
+  /* ---- 読む画面 ---- */
+  #stage { height: 100%; display: flex; flex-direction: column; }
+  #scroller { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #script {
+    position: relative;
+    padding: 28vh 5vw 70vh;
+    font-size: 48px; font-weight: 700; line-height: 1.55;
+    white-space: pre-wrap; overflow-wrap: anywhere; line-break: strict;
+  }
+  #script.mirror { transform: scaleX(-1); }
+  #past { color: var(--past); }
+  /* 読んでいる文を色反転 */
+  #curRead, #curNext {
+    background: var(--text);
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }
+  #curRead { color: #8f8c84; }
+  #curNext { color: var(--bg); }
+
+  #bar {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
+    background: var(--panel); border-top: 1px solid var(--line);
+    padding: 8px max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+  #bar button { padding: 8px 12px; font-size: 15px; }
+  #bar .group { display: flex; gap: 4px; }
+  #mirror[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  #mic {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--muted); min-width: 9em;
+  }
+  #mic i { width: 10px; height: 10px; border-radius: 50%; background: var(--past); flex: none; }
+  #mic.on i { background: #4ad27a; }
+  #mic.err { color: var(--danger); }
+  #mic.err i { background: var(--danger); }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+
+<!-- 原稿を貼る画面 -->
+<main id="edit">
+  <h1>声で進むプロンプター</h1>
+  <p>原稿を貼って「スタート」を押し、読み始めてください。声に合わせて進みます。</p>
+  <div id="notice" hidden></div>
+  <textarea id="text" aria-label="原稿" placeholder="ここに原稿を貼り付けます"></textarea>
+  <button id="start" type="button">スタート</button>
+</main>
+
+<!-- 読む画面 -->
+<div id="stage" hidden>
+  <div id="scroller">
+    <div id="script"><span id="past"></span><span id="curRead"></span><span id="curNext"></span><span id="future"></span></div>
+  </div>
+  <div id="bar">
+    <div id="mic" role="status"><i></i><span id="micText">準備中</span></div>
+    <button id="back" type="button">原稿に戻る</button>
+    <button id="top" type="button">最初から</button>
+    <div class="group">
+      <button id="prev" type="button" aria-label="前の文へ">◀ 文</button>
+      <button id="next" type="button" aria-label="次の文へ">文 ▶</button>
+    </div>
+    <div class="group">
+      <button id="smaller" type="button" aria-label="文字を小さく">文字 −</button>
+      <button id="bigger" type="button" aria-label="文字を大きく">文字 ＋</button>
+    </div>
+    <button id="mirror" type="button" aria-pressed="false">左右反転</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+
+  var SAMPLE =
+    "こんにちは。これはサンプルの原稿です。\n\n" +
+    "声に出して読むと、読んでいる文の色が反転し、画面が自動で進みます。\n\n" +
+    "途中で止まれば、画面も止まります。原稿にない話をしている間は、その場で待っています。\n\n" +
+    "原稿に戻って読み始めると、また続きから進みます。\n\n" +
+    "この文章を消して、ご自分の原稿を貼り付けてください。";
+
+  // ---- 保存(この端末のブラウザ内だけ) ----
+  function load(key, fallback) {
+    try { var v = localStorage.getItem("prompter." + key); return v === null ? fallback : v; }
+    catch (e) { return fallback; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem("prompter." + key, value); } catch (e) {}
+  }
+
+  // ---- 文字の正規化:句読点と空白を除き、カタカナはひらがなに揃える ----
+  function normChar(ch) {
+    var c = ch.charCodeAt(0);
+    if (c >= 0x30A1 && c <= 0x30F6) return String.fromCharCode(c - 0x60);       // カタカナ→ひらがな
+    if (c >= 0xFF10 && c <= 0xFF5A) ch = String.fromCharCode(c - 0xFEE0);       // 全角英数→半角
+    return ch.toLowerCase();
+  }
+  var KEEP = /[\p{L}\p{N}]/u;
+  function normalize(str) {
+    var chars = [], map = [];
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      if (KEEP.test(ch)) { chars.push(normChar(ch)); map.push(i); }
+    }
+    return { chars: chars, map: map };
+  }
+
+  // ---- 原稿の状態 ----
+  var text = "", N = [], MAP = [], SEGS = [], pos = 0;   // pos = 読み終えた文字数(正規化後)
+
+  // 文の区切り。長い文は読点でも区切る。
+  function buildSegments(str) {
+    var segs = [], start = 0;
+    function push(end) { if (end > start) { segs.push({ start: start, end: end }); start = end; } }
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      var hard = "。！？!?\n".indexOf(ch) >= 0;
+      var soft = "、,".indexOf(ch) >= 0 && i - start >= 28;
+      if (hard || soft) {
+        var j = i + 1;
+        while (j < str.length && "。！？!?、」』）)".indexOf(str[j]) >= 0) j++;
+        push(j); i = j - 1;
+      }
+    }
+    push(str.length);
+    // 読む文字を含まない区切り(空行など)は前の文にまとめる
+    var out = [];
+    segs.forEach(function (s) {
+      if (KEEP.test(str.slice(s.start, s.end)) || !out.length) out.push(s);
+      else out[out.length - 1].end = s.end;
+    });
+    return out;
+  }
+
+  function setScript(str) {
+    text = str;
+    var n = normalize(str);
+    N = n.chars; MAP = n.map;
+    SEGS = buildSegments(str);
+    pos = 0;
+  }
+
+  // ---- 照合:聞こえた言葉の末尾を、現在位置の少し先までの原稿から探す ----
+  // 多少の聞き違い・漢字の違いは許容する(あいまい一致)。見つからなければ位置を保つ。
+  function search(tail, from, to, maxErr) {
+    var m = tail.length, prev = [], cur = [], best = -1, bestScore = Infinity, i, j;
+    for (i = 0; i <= m; i++) prev[i] = i;
+    for (j = from; j < to; j++) {
+      cur[0] = 0;
+      for (i = 1; i <= m; i++) {
+        cur[i] = Math.min(prev[i - 1] + (tail[i - 1] === N[j] ? 0 : 1), prev[i] + 1, cur[i - 1] + 1);
+      }
+      var end = j + 1;
+      // 最後の1文字は原稿と一致していること(同じ言葉が続けて届いても、位置が先へずれないように)
+      if (cur[m] <= maxErr && end > pos && tail[m - 1] === N[j]) {
+        var score = cur[m] * 10 + (end - pos);
+        if (score < bestScore) { bestScore = score; best = end; }
+      }
+      var t = prev; prev = cur; cur = t;
+    }
+    return best;
+  }
+
+  function locate(heard) {
+    var all = normalize(heard).chars;
+    var tail = all.slice(-8), m = tail.length;
+    if (m < 2) return pos;
+    if (m < 4) {                         // 話し始めの数文字は、続きと完全一致のときだけ進める
+      for (var i = 0; i < m; i++) if (N[pos + i] !== tail[i]) return pos;
+      return pos + m;
+    }
+    var maxErr = m >= 8 ? 2 : m >= 5 ? 1 : 0;
+    var hit = search(tail, Math.max(0, pos - m), Math.min(N.length, pos + 45), maxErr);
+    if (hit < 0 && m >= 8) {             // 文を飛ばした場合:はっきり一致したときだけ先へ追いつく
+      hit = search(tail, pos, Math.min(N.length, pos + 400), 0);
+    }
+    return hit < 0 ? pos : hit;
+  }
+
+  // ---- 表示 ----
+  var elPast = $("past"), elRead = $("curRead"), elNext = $("curNext"), elFuture = $("future");
+  var scroller = $("scroller"), scriptEl = $("script");
+
+  function segIndexAt(orig) {
+    for (var i = 0; i < SEGS.length; i++) if (orig < SEGS[i].end) return i;
+    return SEGS.length - 1;
+  }
+  function currentSeg() {
+    if (pos >= N.length) return -1;      // 読み終わり
+    return segIndexAt(MAP[pos]);
+  }
+
+  function render(instant) {
+    var si = currentSeg();
+    if (si < 0) {
+      elPast.textContent = text; elRead.textContent = ""; elNext.textContent = ""; elFuture.textContent = "";
+      return;
+    }
+    var seg = SEGS[si];
+    var s = seg.start, e = seg.end;
+    while (s < e && /\s/.test(text[s])) s++;          // 反転の帯に改行や空白を含めない
+    while (e > s && /\s/.test(text[e - 1])) e--;
+    var cut = Math.min(Math.max(MAP[pos], s), e);     // 次に読む文字の位置
+    elPast.textContent = text.slice(0, s);
+    elRead.textContent = text.slice(s, cut);
+    elNext.textContent = text.slice(cut, e);
+    elFuture.textContent = text.slice(e);
+    var anchor = elRead.textContent ? elRead : elNext;
+    var target = Math.max(0, anchor.offsetTop - scroller.clientHeight * 0.28);
+    if (Math.abs(scroller.scrollTop - target) > 4) {
+      scroller.scrollTo({ top: target, behavior: instant ? "auto" : "smooth" });
+    }
+  }
+
+  function moveTo(newPos, instant) {
+    pos = Math.max(0, Math.min(N.length, newPos));
+    render(instant);
+  }
+  function segStartPos(si) {             // 文の先頭にあたる正規化位置
+    var orig = SEGS[si].start;
+    for (var i = 0; i < MAP.length; i++) if (MAP[i] >= orig) return i;
+    return N.length;
+  }
+  function stepSegment(dir) {
+    var si = currentSeg();
+    if (si < 0) si = SEGS.length;
+    if (dir < 0) {
+      var atStart = si < SEGS.length && segStartPos(si) === pos;
+      si = Math.max(0, atStart || si === SEGS.length ? si - 1 : si);
+      moveTo(segStartPos(si), false);
+    } else {
+      moveTo(si + 1 < SEGS.length ? segStartPos(si + 1) : N.length, false);
+    }
+  }
+
+  // ---- 文字サイズ・左右反転 ----
+  var fontSize = parseInt(load("font", "48"), 10) || 48;
+  var mirrored = load("mirror", "0") === "1";
+  function applyLook() {
+    scriptEl.style.fontSize = fontSize + "px";
+    scriptEl.classList.toggle("mirror", mirrored);
+    $("mirror").setAttribute("aria-pressed", mirrored ? "true" : "false");
+  }
+  function changeFont(delta) {
+    fontSize = Math.max(20, Math.min(140, fontSize + delta));
+    save("font", String(fontSize));
+    applyLook(); render(true);
+  }
+
+  // ---- 音声認識 ----
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var rec = null, running = false, restartTimer = 0, wakeLock = null;
+  var micEl = $("mic"), micText = $("micText");
+
+  function setMic(state, label) {
+    micEl.className = state; micText.textContent = label;
+  }
+
+  function startListening() {
+    if (!SR || !running) return;
+    try { if (rec) { rec.onend = null; rec.abort(); } } catch (e) {}
+    rec = new SR();
+    rec.lang = "ja-JP";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onstart = function () { setMic("on", "聞いています"); };
+    rec.onresult = function (ev) {
+      var heard = "";
+      for (var i = Math.max(0, ev.results.length - 2); i < ev.results.length; i++) {
+        heard += ev.results[i][0].transcript;
+      }
+      var p = locate(heard);
+      if (p !== pos) moveTo(p, false);
+    };
+    rec.onerror = function (ev) {
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        running = false;
+        setMic("err", "マイクが許可されていません");
+      } else if (ev.error === "audio-capture") {
+        running = false;
+        setMic("err", "マイクが見つかりません");
+      }
+      // no-speech / aborted / network は onend で自動的に再開する
+    };
+    rec.onend = function () {
+      if (!running) return;
+      setMic("", "再接続中");
+      clearTimeout(restartTimer);
+      restartTimer = setTimeout(startListening, 300);
+    };
+    try { rec.start(); }
+    catch (e) { clearTimeout(restartTimer); restartTimer = setTimeout(startListening, 600); }
+  }
+
+  function stopListening() {
+    running = false;
+    clearTimeout(restartTimer);
+    try { if (rec) { rec.onend = null; rec.abort(); } } catch (e) {}
+    rec = null;
+  }
+
+  function keepAwake() {                 // 読んでいる間、画面が暗くならないようにする
+    if (!navigator.wakeLock || !running) return;
+    navigator.wakeLock.request("screen").then(function (l) { wakeLock = l; }).catch(function () {});
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && running) { keepAwake(); startListening(); }
+  });
+
+  // ---- 画面の切り替え ----
+  var textEl = $("text");
+  textEl.value = load("text", SAMPLE);
+  textEl.addEventListener("input", function () { save("text", textEl.value); });
+
+  if (!SR) {
+    var n = $("notice");
+    n.hidden = false;
+    n.textContent = "このブラウザは音声認識に対応していません。Safari(iPhone・iPad・Mac)またはChromeで開いてください。";
+  }
+
+  $("start").addEventListener("click", function () {
+    var str = textEl.value.replace(/\r\n?/g, "\n").trim();
+    if (!str) { textEl.focus(); return; }
+    setScript(str);
+    $("edit").hidden = true;
+    $("stage").hidden = false;
+    applyLook();
+    scroller.scrollTop = 0;
+    render(true);
+    if (SR) { running = true; setMic("", "準備中"); startListening(); keepAwake(); }
+    else setMic("err", "音声認識が使えません(手動で進めます)");
+  });
+
+  $("back").addEventListener("click", function () {
+    stopListening();
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+    $("stage").hidden = true;
+    $("edit").hidden = false;
+  });
+  $("top").addEventListener("click", function () { moveTo(0, false); });
+  $("prev").addEventListener("click", function () { stepSegment(-1); });
+  $("next").addEventListener("click", function () { stepSegment(1); });
+  $("smaller").addEventListener("click", function () { changeFont(-6); });
+  $("bigger").addEventListener("click", function () { changeFont(6); });
+  $("mirror").addEventListener("click", function () {
+    mirrored = !mirrored; save("mirror", mirrored ? "1" : "0"); applyLook();
+  });
+  // マイクが止まったときは、表示をタップして再開できる
+  micEl.addEventListener("click", function () {
+    if (!running && SR) { running = true; setMic("", "準備中"); startListening(); keepAwake(); }
+  });
+
+  // テスト用に照合ロジックを公開
+  window.__prompter = { setScript: setScript, locate: locate, get pos() { return pos; }, set pos(v) { pos = v; }, get N() { return N; }, get SEGS() { return SEGS; } };
+})();
+</script>
+</body>
+</html>
