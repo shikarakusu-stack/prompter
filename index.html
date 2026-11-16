@@ -129,6 +129,7 @@
     <button id="recv" type="button">QRで受け取る</button>
   </div>
   <button id="start" type="button">スタート</button>
+  <p id="ver" style="text-align:center;font-size:12px"></p>
 </main>
 
 <!-- QRコードで送る・受け取る画面 -->
@@ -166,6 +167,25 @@
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+
+  // ---- 版の確認 ----
+  // スマホは古いページをしばらく覚えている。開いたときに最新の版を確かめ、違っていたら自動で読み込み直す。
+  var VERSION = "2026-11-16-5";          // 公開のたびに書き換える
+  $("ver").textContent = "版 " + VERSION;
+  (function checkUpdate() {
+    if (!window.fetch || location.protocol.indexOf("http") !== 0) return;
+    fetch(location.pathname + "?_=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.text() : ""; })
+      .then(function (html) {
+        var m = /var VERSION = "([^"]+)"/.exec(html);
+        if (!m || m[1] === VERSION) return;
+        var tried = "";
+        try { tried = sessionStorage.getItem("prompter.upd") || ""; sessionStorage.setItem("prompter.upd", m[1]); } catch (e) {}
+        if (tried === m[1] || $("edit").hidden) return;   // 同じ版で繰り返さない。読んでいる最中は切り替えない
+        location.replace(location.pathname + "?v=" + encodeURIComponent(m[1]));
+      })
+      .catch(function () {});
+  })();
 
   var SAMPLE =
     "こんにちは。これはサンプルの原稿です。\n\n" +
