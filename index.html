@@ -67,6 +67,10 @@
   }
   #edit .row { display: flex; gap: 8px; }
   #edit .row button { flex: 1; font-size: 15px; }
+  #clear {
+    align-self: flex-end; margin-top: -4px; padding: 6px 14px; font-size: 14px;
+    background: transparent; color: var(--text); border: 1px solid #565a62; border-radius: 8px;
+  }
 
   /* ---- QRコードで送る・受け取る画面 ---- */
   #qr {
@@ -130,6 +134,7 @@
   <div id="notice" hidden></div>
   <div id="info" hidden></div>
   <textarea id="text" aria-label="原稿" placeholder="ここに原稿を貼り付けます"></textarea>
+  <button id="clear" type="button">原稿を消す</button>
   <div class="row">
     <button id="send" type="button">スマホに送る（QR表示）</button>
     <button id="recv" type="button">QRで受け取る</button>
@@ -172,7 +177,7 @@
 
   // ---- 版の確認 ----
   // スマホは古いページをしばらく覚えている。開いたときに最新の版を確かめ、違っていたら自動で読み込み直す。
-  var VERSION = "2026-11-17-1";          // 公開のたびに書き換える
+  var VERSION = "2026-11-17-2";          // 公開のたびに書き換える
   $("ver").textContent = "版 " + VERSION;
   (function checkUpdate() {
     if (!window.fetch || location.protocol.indexOf("http") !== 0) return;
@@ -492,7 +497,22 @@
   // ---- 画面の切り替え ----
   var textEl = $("text");
   textEl.value = load("text", SAMPLE);
-  textEl.addEventListener("input", function () { save("text", textEl.value); });
+  textEl.addEventListener("input", function () { save("text", textEl.value); forgetCleared(); });
+
+  // 原稿を消す。押し間違いに備えて、次に何か入れるまでは「元に戻す」で戻せる
+  var clearEl = $("clear"), cleared = null;
+  function forgetCleared() { cleared = null; clearEl.textContent = "原稿を消す"; }
+  clearEl.addEventListener("click", function () {
+    if (cleared !== null) {
+      textEl.value = cleared; save("text", cleared); forgetCleared();
+      return;
+    }
+    if (!textEl.value) return;
+    cleared = textEl.value;
+    textEl.value = ""; save("text", "");
+    clearEl.textContent = "元に戻す";
+    showInfo("原稿を消しました。間違えたときは「元に戻す」を押してください。");
+  });
 
   if (!SR) {
     var n = $("notice");
@@ -687,7 +707,7 @@
         if (payload === null) return;
         done = true;
         unpack(payload).then(function (str) {
-          textEl.value = str; save("text", str);
+          textEl.value = str; save("text", str); forgetCleared();
           closeQR();
           showInfo("原稿を受け取りました(" + str.length + "文字)。");
         }).catch(function () {
