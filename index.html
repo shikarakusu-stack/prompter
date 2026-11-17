@@ -172,7 +172,7 @@
 
   // ---- 版の確認 ----
   // スマホは古いページをしばらく覚えている。開いたときに最新の版を確かめ、違っていたら自動で読み込み直す。
-  var VERSION = "2026-11-16-6";          // 公開のたびに書き換える
+  var VERSION = "2026-11-17-1";          // 公開のたびに書き換える
   $("ver").textContent = "版 " + VERSION;
   (function checkUpdate() {
     if (!window.fetch || location.protocol.indexOf("http") !== 0) return;
@@ -259,27 +259,33 @@
 
   // ---- 照合:聞こえた言葉の末尾を、現在位置の少し先までの原稿から探す ----
   // 多少の聞き違い・漢字の違いは許容する(あいまい一致)。見つからなければ位置を保つ。
-  function search(tail, from, to, maxErr) {
-    var m = tail.length, prev = [], cur = [], best = -1, bestScore = Infinity, i, j;
+  // 原則は「上から順番に」。同じ言葉が先にも出てくる原稿で、勝手に先へ飛ばないようにしている。
+  var BACK = 30, NEAR = 45, FAR = 400;
+
+  // 原稿の from〜to の各位置について「そこで終わる部分と tail の違いの数」を返す
+  function scan(tail, from, to) {
+    var m = tail.length, prev = [], cur = [], out = [], i, j;
+    from = Math.max(0, from); to = Math.min(N.length, to);
     for (i = 0; i <= m; i++) prev[i] = i;
     for (j = from; j < to; j++) {
       cur[0] = 0;
       for (i = 1; i <= m; i++) {
         cur[i] = Math.min(prev[i - 1] + (tail[i - 1] === N[j] ? 0 : 1), prev[i] + 1, cur[i - 1] + 1);
       }
-      var end = j + 1;
-      // 最後の1文字は原稿と一致していること(同じ言葉が続けて届いても、位置が先へずれないように)
-      if (cur[m] <= maxErr && end > pos && tail[m - 1] === N[j]) {
-        var score = cur[m] * 10 + (end - pos);
-        if (score < bestScore) { bestScore = score; best = end; }
-      }
+      // last = 最後の1文字が原稿と一致しているか(位置が1〜2文字ずれないように必ず見る)
+      out.push({ end: j + 1, err: cur[m], last: tail[m - 1] === N[j] });
       var t = prev; prev = cur; cur = t;
     }
-    return best;
+    return out;
+  }
+  function errAt(tail, end) {
+    var r = scan(tail, end - tail.length * 2, end);
+    return r.length ? r[r.length - 1].err : Infinity;
   }
 
   function locate(heard) {
     var all = normalize(heard).chars;
+    if (all.length > 80) all = all.slice(-80);
     var tail = all.slice(-8), m = tail.length;
     if (m < 2) return pos;
     if (m < 4) {                         // 話し始めの数文字は、続きと完全一致のときだけ進める
@@ -287,11 +293,48 @@
       return pos + m;
     }
     var maxErr = m >= 8 ? 2 : m >= 5 ? 1 : 0;
-    var hit = search(tail, Math.max(0, pos - m), Math.min(N.length, pos + 45), maxErr);
-    if (hit < 0 && m >= 8) {             // 文を飛ばした場合:はっきり一致したときだけ先へ追いつく
-      hit = search(tail, pos, Math.min(N.length, pos + 400), 0);
+
+    // 1) 近くを探す。先(ahead)だけでなく、もう読んだ所(behind)に同じ言葉があるかも見る
+    var ahead = null, behind = null;
+    scan(tail, pos - BACK, pos + NEAR).forEach(function (c) {
+      if (!c.last || c.err > maxErr) return;
+      if (c.end > pos) {
+        var score = c.err * 10 + (c.end - pos);
+        if (!ahead || score < ahead.score) ahead = { end: c.end, err: c.err, score: score };
+      } else if (!behind || c.err < behind.err || (c.err === behind.err && c.end > behind.end)) {
+        behind = c;
+      }
+    });
+    if (ahead) {
+      var ok = true;
+      // 同じ言葉が読み終えた所にもある(=読み終えた言葉がもう一度届いただけかもしれない)
+      // → もっと長い文脈で比べて、先のほうがはっきり合うときだけ進む
+      if (behind && behind.err <= ahead.err) {
+        var L = Math.min(all.length, 24);
+        if (L <= m) ok = false;
+        else { var lt = all.slice(-L); ok = errAt(lt, ahead.end) < errAt(lt, behind.end); }
+      }
+      // 間を飛ばして進むときは、飛ばした部分も聞こえた言葉に含まれていること
+      var gap = ahead.end - pos;
+      if (ok && gap > m) {
+        var L2 = Math.min(all.length, gap + 4);
+        ok = L2 >= gap - 2 && errAt(all.slice(-L2), ahead.end) <= Math.max(2, Math.floor(L2 * 0.2));
+      }
+      if (ok) return ahead.end;
     }
-    return hit < 0 ? pos : hit;
+
+    // 2) 文を飛ばして読んだ場合:12文字が完全に一致し、その場所が1か所だけのときに限って追いつく
+    if (all.length < 12) return pos;
+    var t12 = all.slice(-12), best = null, first = -1, lastEnd = -1, seenBehind = false;
+    scan(t12, pos - BACK, pos + FAR).forEach(function (c) {
+      if (c.err > 0) return;
+      if (c.end <= pos) { seenBehind = true; return; }
+      if (first < 0) first = c.end;
+      lastEnd = c.end;
+      if (!best || c.err < best.err) best = c;
+    });
+    if (seenBehind || !best || lastEnd - first > 3) return pos;
+    return best.end;
   }
 
   // ---- 表示 ----
